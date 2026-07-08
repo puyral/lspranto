@@ -31,6 +31,7 @@ All positions are **0-based** `line:character` (LSP convention).
 | `lsp_activate_workspace` | Activate a workspace directory. |
 | `lsp_list_workspaces` | List active workspaces. |
 | `lsp_deactivate_workspace` | Deactivate a workspace and shut down its server(s). |
+| `lsp_get_server_logs` | Recent stderr output from the language server(s) — diagnose empty results (e.g. rust-analyzer indexing errors). Defaults to the last 100 lines. |
 | `lsp_hover` | Type/documentation at a position. |
 | `lsp_goto_definition` | Jump to a symbol's definition. |
 | `lsp_find_references` | Find all references to a symbol. |

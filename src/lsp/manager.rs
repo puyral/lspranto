@@ -120,6 +120,21 @@ impl Manager {
         client.ensure_open(&uri).await?;
         Ok((client, uri))
     }
+
+    /// Return the last `n` stderr lines for each language server running under
+    /// the given workspace root. Used by the `lsp_get_server_logs` tool.
+    pub async fn server_logs(
+        &self,
+        workspace: &Path,
+        n: usize,
+    ) -> Vec<(String, Vec<String>)> {
+        let st = self.state.lock().await;
+        st.clients
+            .iter()
+            .filter(|((root, _), _)| root == workspace)
+            .map(|((_, lang), c)| (lang.clone(), c.stderr_tail(n)))
+            .collect()
+    }
 }
 
 fn longest_workspace<'a>(workspaces: &'a [PathBuf], file: &Path) -> Option<&'a PathBuf> {

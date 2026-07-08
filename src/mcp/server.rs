@@ -79,6 +79,42 @@ impl LsprantoServer {
         }
     }
 
+    #[tool(
+        name = "lsp_get_server_logs",
+        description = "Return the most recent stderr output from the language server(s) for a workspace. Useful to diagnose why a server returns empty results (e.g. rust-analyzer \"No path was found\" indexing errors). Defaults to the last 100 lines."
+    )]
+    async fn lsp_get_server_logs(
+        &self,
+        Parameters(p): Parameters<ServerLogsParam>,
+    ) -> Result<CallToolResult, McpError> {
+        let canon = match std::path::Path::new(&p.workspace_path).canonicalize() {
+            Ok(c) => c,
+            Err(e) => return Ok(err_text(format!("invalid workspace_path: {e}"))),
+        };
+        let n = p.lines.unwrap_or(100).clamp(1, 500);
+        let logs = self.manager.server_logs(&canon, n).await;
+        if logs.is_empty() {
+            return Ok(ok_text(format!(
+                "No active language servers for {}. Activate a workspace and open a file first.",
+                canon.display()
+            )));
+        }
+        let mut out = String::new();
+        for (lang, lines) in logs {
+            out.push_str(&format!("=== {lang} (last {} lines) ===\n", lines.len()));
+            if lines.is_empty() {
+                out.push_str("(no stderr output yet)\n");
+            } else {
+                for l in &lines {
+                    out.push_str(l);
+                    out.push('\n');
+                }
+            }
+            out.push('\n');
+        }
+        Ok(ok_text(out))
+    }
+
     // ---------------- queries ----------------
 
     #[tool(
@@ -352,6 +388,16 @@ pub struct WorkspacePathParam {
     #[schemars(description = "Absolute path to the workspace directory.")]
     #[serde(alias = "workspace_dir", alias = "file_path", alias = "path")]
     pub workspace_path: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ServerLogsParam {
+    #[schemars(description = "Absolute path to the workspace directory.")]
+    #[serde(alias = "workspace_dir", alias = "file_path", alias = "path")]
+    pub workspace_path: String,
+    #[schemars(description = "Number of recent stderr lines to return (1–500, default 100).")]
+    #[serde(default, alias = "tail", alias = "n")]
+    pub lines: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]

@@ -9,6 +9,7 @@ use crate::config::ServerConfig;
 use crate::lsp::conv;
 use crate::lsp::transport::{self, Incoming, RpcError};
 use anyhow::{Context, Result};
+use std::collections::VecDeque;
 use lsp_types::{
     ClientCapabilities, CompletionParams, CompletionResponse, ConfigurationParams,
     DidChangeTextDocumentParams, DidOpenTextDocumentParams, DocumentSymbolParams,
@@ -40,6 +41,8 @@ struct Inner {
     diagnostics: Mutex<HashMap<Uri, Vec<lsp_types::Diagnostic>>>,
     caps: OnceLock<ServerCapabilities>,
     open_docs: Mutex<HashMap<Uri, i32>>,
+    /// Rolling buffer of recent language-server stderr lines (for the `lsp_get_server_logs` tool).
+    stderr_buf: Mutex<VecDeque<String>>,
     next_id: AtomicI64,
     root: Uri,
     root_path: std::path::PathBuf,
@@ -59,7 +62,7 @@ impl LspClient {
             .current_dir(&root_path)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
 
         let mut child = command
@@ -67,6 +70,7 @@ impl LspClient {
             .with_context(|| format!("spawning language server `{}`", cfg.command))?;
         let stdin = child.stdin.take().context("server has no stdin")?;
         let stdout = child.stdout.take().context("server has no stdout")?;
+        let stderr = child.stderr.take().context("server has no stderr")?;
 
         let inner = Arc::new(Inner {
             writer: AsyncMutex::new(stdin),
@@ -74,6 +78,7 @@ impl LspClient {
             diagnostics: Mutex::new(HashMap::new()),
             caps: OnceLock::new(),
             open_docs: Mutex::new(HashMap::new()),
+            stderr_buf: Mutex::new(VecDeque::new()),
             next_id: AtomicI64::new(1),
             root,
             root_path,
@@ -84,6 +89,14 @@ impl LspClient {
         let inner_reader = inner.clone();
         tokio::spawn(async move {
             reader_loop(inner_reader, BufReader::new(stdout)).await;
+        });
+
+        // Tee the server's stderr into an in-memory ring buffer (for the
+        // `lsp_get_server_logs` tool) and forward every line to our own stderr
+        // so pi's log capture is unchanged from the prior `Stdio::inherit()`.
+        let inner_stderr = inner.clone();
+        tokio::spawn(async move {
+            stderr_loop(inner_stderr, BufReader::new(stderr)).await;
         });
 
         Ok(Arc::new(Self { inner }))
@@ -269,6 +282,15 @@ impl LspClient {
         self.inner.diagnostics.lock().unwrap().get(uri).cloned().unwrap_or_default()
     }
 
+    /// Return the last `n` stderr lines captured from the language server, in
+    /// chronological order. Used by the `lsp_get_server_logs` tool to surface
+    /// server-side diagnostics (e.g. rust-analyzer's progress/errors) to the LLM.
+    pub fn stderr_tail(&self, n: usize) -> Vec<String> {
+        let buf = self.inner.stderr_buf.lock().unwrap();
+        let start = buf.len().saturating_sub(n);
+        buf.iter().skip(start).cloned().collect()
+    }
+
     pub async fn shutdown(&self) -> Result<()> {
         let _ = self.request_raw("shutdown", Value::Null).await;
         let _ = self.notify("exit", Value::Null).await;
@@ -420,6 +442,50 @@ async fn reader_loop(inner: Arc<Inner>, mut reader: BufReader<ChildStdout>) {
         }
     }
     inner.fail_all("language server disconnected");
+}
+
+/// Capacity of the per-server stderr ring buffer. Keep the last N lines so the
+/// `lsp_get_server_logs` tool can show recent server output without unbounded
+/// memory growth.
+const STDERR_BUF_CAP: usize = 500;
+
+/// Read the language server's stderr line-by-line, push each line into the
+/// in-memory ring buffer (for `lsp_get_server_logs`), and forward it to our own
+/// stderr so pi's log capture is unchanged from the prior `Stdio::inherit()`.
+async fn stderr_loop(inner: Arc<Inner>, mut reader: BufReader<tokio::process::ChildStderr>) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let mut stdout = tokio::io::stderr();
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line).await {
+            Ok(0) => {
+                tracing::info!("language server `{}` closed its stderr", inner.cfg.command);
+                break;
+            }
+            Ok(_) => {
+                // Forward to our stderr (best-effort; ignore write errors).
+                let bytes = line.as_bytes();
+                let _ = stdout.write_all(bytes).await;
+                let _ = stdout.flush().await;
+                // Strip the trailing newline for the ring buffer.
+                if line.ends_with('\n') {
+                    line.pop();
+                    if line.ends_with('\r') {
+                        line.pop();
+                    }
+                }
+                let mut buf = inner.stderr_buf.lock().unwrap();
+                if buf.len() >= STDERR_BUF_CAP {
+                    buf.pop_front();
+                }
+                buf.push_back(line);
+            }
+            Err(e) => {
+                tracing::warn!("language server stderr read error: {e}");
+                break;
+            }
+        }
+    }
 }
 
 impl Inner {
