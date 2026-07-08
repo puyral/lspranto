@@ -1,6 +1,7 @@
 //! The MCP server: exposes LSP features as `lsp_*` tools.
 
 use crate::lsp::client::LspClient;
+use crate::lsp::conv;
 use crate::lsp::edit;
 use crate::lsp::manager::Manager;
 use crate::text;
@@ -239,8 +240,15 @@ impl LsprantoServer {
         }
         let edit = match client.rename(&uri, pos, &p.new_name).await {
             Ok(Some(e)) => e,
-            Ok(None) => return Ok(err_text("no rename edits produced")),
-            Err(e2) => return Ok(err_text(format!("rename failed: {e2:#}"))),
+            Ok(None) => {
+                return Ok(err_text(no_renameable_symbol_msg(&p.file_path, p.line, p.character, None)))
+            }
+            Err(e2) => return Ok(err_text(no_renameable_symbol_msg(
+                &p.file_path,
+                p.line,
+                p.character,
+                Some(&format!("{e2:#}")),
+            ))),
         };
         if p.apply.unwrap_or(false) {
             let applied = match edit::apply_to_disk(&edit) {
@@ -305,7 +313,14 @@ impl LsprantoServer {
             .client_for(&PathBuf::from(file_path))
             .await
             .map_err(|e| format!("{e:#}"))?;
-        Ok((client, uri, Position { line, character }))
+        // Snap the cursor to an interior point of the identifier under (or nearest
+        // to) it, so position-based queries are tolerant of imprecise placement
+        // (e.g. pointing at a token's first char vs. its middle). Best-effort:
+        // fall back to the raw position if the file can't be read or no identifier
+        // is found on the line.
+        let pos = conv::normalize_position(file_path, line, character)
+            .unwrap_or(Position { line, character });
+        Ok((client, uri, pos))
     }
 
     async fn route_file(&self, file_path: &str) -> Result<(Arc<LspClient>, Uri), String> {
@@ -335,18 +350,21 @@ impl ServerHandler for LsprantoServer {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct WorkspacePathParam {
     #[schemars(description = "Absolute path to the workspace directory.")]
+    #[serde(alias = "workspace_dir", alias = "file_path", alias = "path")]
     pub workspace_path: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct FileParam {
     #[schemars(description = "Absolute path to the file.")]
+    #[serde(alias = "path", alias = "workspace_path", alias = "workspace_dir")]
     pub file_path: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct PositionParam {
     #[schemars(description = "Absolute path to the file.")]
+    #[serde(alias = "path", alias = "workspace_path", alias = "workspace_dir")]
     pub file_path: String,
     #[schemars(description = "0-based line number.")]
     pub line: u32,
@@ -357,6 +375,7 @@ pub struct PositionParam {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ReferencesParam {
     #[schemars(description = "Absolute path to the file.")]
+    #[serde(alias = "path", alias = "workspace_path", alias = "workspace_dir")]
     pub file_path: String,
     #[schemars(description = "0-based line number.")]
     pub line: u32,
@@ -369,6 +388,7 @@ pub struct ReferencesParam {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct RenameParam {
     #[schemars(description = "Absolute path to the file.")]
+    #[serde(alias = "path", alias = "workspace_path", alias = "workspace_dir")]
     pub file_path: String,
     #[schemars(description = "0-based line number.")]
     pub line: u32,
@@ -383,6 +403,7 @@ pub struct RenameParam {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct WorkspaceSymbolParam {
     #[schemars(description = "Absolute path to a file in the workspace; anchors the workspace and language.")]
+    #[serde(alias = "path", alias = "workspace_path", alias = "workspace_dir")]
     pub file_path: String,
     #[schemars(description = "Query string (symbol name / prefix).")]
     pub query: String,
@@ -391,6 +412,7 @@ pub struct WorkspaceSymbolParam {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct RawRequestParam {
     #[schemars(description = "Absolute path to a file in the workspace; anchors the workspace and language and is opened first.")]
+    #[serde(alias = "path", alias = "workspace_path", alias = "workspace_dir")]
     pub file_path: String,
     #[schemars(description = "The LSP method name, e.g. `textDocument/typeDefinition`, `textDocument/implementation`, `textDocument/codeAction`.")]
     pub method: String,
@@ -406,4 +428,24 @@ fn ok_text(s: impl Into<String>) -> CallToolResult {
 
 fn err_text(s: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(s.into())])
+}
+
+/// Friendly, actionable message for when `rename` (and similar position-based
+/// queries) find nothing at the given position. `detail` is the underlying
+/// server error, if any, included so information isn't lost.
+fn no_renameable_symbol_msg(
+    file_path: &str,
+    line: u32,
+    character: u32,
+    detail: Option<&str>,
+) -> String {
+    let mut msg = format!(
+        "No renameable symbol at {file_path}:{line}:{character} (positions are 0-based). \
+         Make sure the position points at an identifier, not a keyword or whitespace."
+    );
+    if let Some(d) = detail {
+        msg.push_str("\nUnderlying error: ");
+        msg.push_str(d);
+    }
+    msg
 }
