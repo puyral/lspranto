@@ -11,12 +11,12 @@ use crate::lsp::transport::{self, Incoming, RpcError};
 use anyhow::{Context, Result};
 use lsp_types::{
     ClientCapabilities, CompletionParams, CompletionResponse, ConfigurationParams,
-    DidOpenTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionResponse,
-    Hover, HoverParams, InitializeParams, InitializeResult, Position,
-    PublishDiagnosticsParams, ReferenceParams, RenameParams, ServerCapabilities, Uri,
-    TextDocumentClientCapabilities, TextDocumentIdentifier, TextDocumentItem,
-    TextDocumentPositionParams, WorkspaceClientCapabilities, WorkspaceEdit, WorkspaceFolder,
-    WorkspaceSymbolParams,
+    DidChangeTextDocumentParams, DidOpenTextDocumentParams, DocumentSymbolParams,
+    DocumentSymbolResponse, GotoDefinitionResponse, Hover, HoverParams, InitializeParams,
+    InitializeResult, Position, PublishDiagnosticsParams, ReferenceParams, RenameParams,
+    ServerCapabilities, Uri, TextDocumentClientCapabilities, TextDocumentIdentifier,
+    TextDocumentItem, TextDocumentPositionParams, WorkspaceClientCapabilities, WorkspaceEdit,
+    WorkspaceFolder, WorkspaceSymbolParams,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -280,6 +280,15 @@ impl LspClient {
 
     // ---- plumbing ----
 
+    /// Send an arbitrary LSP request by method name and return the raw JSON
+    /// result. This is the escape hatch used by the `lsp_raw_request` tool so the
+    /// LLM can reach unconventional or less-used LSP features (call hierarchy,
+    /// semantic tokens, type definition, code actions, formatting, ...) without a
+    /// dedicated tool per method.
+    pub async fn raw_request(&self, method: &str, params: Value) -> Result<Value> {
+        self.request_raw(method, params).await
+    }
+
     async fn request<R: serde::de::DeserializeOwned>(&self, method: &str, params: Value) -> Result<R> {
         let v = self.request_raw(method, params).await?;
         serde_json::from_value(v).map_err(Into::into)
@@ -343,6 +352,37 @@ impl LspClient {
         .await?;
         self.inner.open_docs.lock().unwrap().insert(uri.clone(), 1);
         Ok(())
+    }
+
+    /// Notify the server that an already-open document's on-disk content changed,
+    /// sending the full new text (full-text sync). No-op if the document is not
+    /// currently open in this session. Bumps the tracked version.
+    pub async fn sync_changed(&self, uri: &Uri) -> Result<()> {
+        let version = {
+            let mut open = self.inner.open_docs.lock().unwrap();
+            let v = open.entry(uri.clone()).or_insert(0);
+            *v += 1;
+            *v
+        };
+        let path = conv::uri_to_path(uri)?;
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        let params = DidChangeTextDocumentParams {
+            text_document: lsp_types::VersionedTextDocumentIdentifier {
+                uri: uri.clone(),
+                version,
+            },
+            content_changes: vec![lsp_types::TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text,
+            }],
+        };
+        self.notify(
+            "textDocument/didChange",
+            serde_json::to_value(params)?,
+        )
+        .await
     }
 }
 

@@ -36,7 +36,8 @@ All positions are **0-based** `line:character` (LSP convention).
 | `lsp_diagnostics` | Published diagnostics for a file. |
 | `lsp_document_symbols` | The symbol tree of a file. |
 | `lsp_workspace_symbols` | Search workspace symbols by query. |
-| `lsp_rename_symbol` | Check whether a symbol can be renamed, and if so compute the rename edits (**for review — not applied**). |
+| `lsp_raw_request` | Escape hatch: send any LSP request by method name, return raw JSON. |
+| `lsp_rename_symbol` | Check whether a symbol can be renamed, and if so compute the rename edits. Pass `apply: true` to write them to disk (**off by default — dry run for review**). |
 
 Each tool is capability-gated: if the server didn't advertise the feature in
 `initialize`, the tool returns a clean error instead of calling it.

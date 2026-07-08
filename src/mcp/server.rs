@@ -1,6 +1,7 @@
 //! The MCP server: exposes LSP features as `lsp_*` tools.
 
 use crate::lsp::client::LspClient;
+use crate::lsp::edit;
 use crate::lsp::manager::Manager;
 use crate::text;
 use anyhow::Result;
@@ -223,7 +224,7 @@ impl LsprantoServer {
 
     #[tool(
         name = "lsp_rename_symbol",
-        description = "Check whether the symbol at a 0-based position can be renamed, and if so compute the edits needed to rename it. Returns the proposed edits for review; it does NOT apply them. Fails cleanly if the position is not renamable."
+        description = "Check whether the symbol at a 0-based position can be renamed, and if so compute the edits needed to rename it. By default returns the proposed edits for review and does NOT apply them. Pass `apply: true` to actually write the edits to disk and sync the affected documents with the language server. Fails cleanly if the position is not renamable."
     )]
     async fn lsp_rename_symbol(
         &self,
@@ -236,9 +237,53 @@ impl LsprantoServer {
         if !client.supports_rename() {
             return Ok(err_text("server does not support rename"));
         }
-        match client.rename(&uri, pos, &p.new_name).await {
-            Ok(e) => Ok(ok_text(text::format_workspace_edit(e))),
-            Err(e2) => Ok(err_text(format!("rename failed: {e2:#}"))),
+        let edit = match client.rename(&uri, pos, &p.new_name).await {
+            Ok(Some(e)) => e,
+            Ok(None) => return Ok(err_text("no rename edits produced")),
+            Err(e2) => return Ok(err_text(format!("rename failed: {e2:#}"))),
+        };
+        if p.apply.unwrap_or(false) {
+            let applied = match edit::apply_to_disk(&edit) {
+                Ok(a) => a,
+                Err(e) => return Ok(err_text(format!("applying rename edits failed: {e:#}"))),
+            };
+            // Re-sync every open document the edit touched.
+            for change in &applied {
+                if let Ok(changed_uri) = crate::lsp::conv::uri_from_path(&change.path) {
+                    let _ = client.sync_changed(&changed_uri).await;
+                }
+            }
+            Ok(ok_text(format!(
+                "Applied rename to {} file(s) ({}).\n\nProposed edits were:\n{}",
+                applied.len(),
+                applied
+                    .iter()
+                    .map(|c| c.path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                text::format_workspace_edit(Some(edit)),
+            )))
+        } else {
+            Ok(ok_text(text::format_workspace_edit(Some(edit))))
+        }
+    }
+
+    #[tool(
+        name = "lsp_raw_request",
+        description = "Escape hatch: send an arbitrary LSP request by method name and return the raw JSON result. Use this for unconventional or less-used LSP features that don't have a dedicated tool (e.g. textDocument/typeDefinition, textDocument/implementation, textDocument/callHierarchy, textDocument/semanticTokens, textDocument/codeAction, textDocument/foldingRange, textDocument/selectionRange, textDocument/codeLens). `file_path` anchors the workspace and language and is opened first; `params` is the raw LSP request params object (omit for requests that take none). Positions in params are 0-based. No capability gating is done — the server will return an error if it doesn't support the method."
+    )]
+    async fn lsp_raw_request(
+        &self,
+        Parameters(p): Parameters<RawRequestParam>,
+    ) -> Result<CallToolResult, McpError> {
+        let (client, _uri) = match self.route_file(&p.file_path).await {
+            Ok(v) => v,
+            Err(e) => return Ok(err_text(e)),
+        };
+        let params = p.params.unwrap_or(serde_json::Value::Null);
+        match client.raw_request(&p.method, params).await {
+            Ok(v) => Ok(ok_text(serde_json::to_string_pretty(&v).unwrap_or_else(|e| format!("<unserializable result: {e}>")))),
+            Err(e) => Ok(err_text(format!("{} failed: {e:#}", p.method))),
         }
     }
 }
@@ -279,7 +324,8 @@ impl ServerHandler for LsprantoServer {
             "LSP bridge. Activate a workspace with lsp_activate_workspace, then use \
              lsp_hover / lsp_goto_definition / lsp_find_references / lsp_completion / \
              lsp_diagnostics / lsp_document_symbols / lsp_workspace_symbols / \
-             lsp_rename_symbol. All positions are 0-based line:character.",
+             lsp_rename_symbol (apply=true to write) / lsp_raw_request. \
+             All positions are 0-based line:character.",
         )
     }
 }
@@ -330,6 +376,8 @@ pub struct RenameParam {
     pub character: u32,
     #[schemars(description = "The new name for the symbol.")]
     pub new_name: String,
+    #[schemars(description = "If true, write the rename edits to disk and sync the affected documents with the language server. Default false (dry run — return edits for review).")]
+    pub apply: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -338,6 +386,16 @@ pub struct WorkspaceSymbolParam {
     pub file_path: String,
     #[schemars(description = "Query string (symbol name / prefix).")]
     pub query: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RawRequestParam {
+    #[schemars(description = "Absolute path to a file in the workspace; anchors the workspace and language and is opened first.")]
+    pub file_path: String,
+    #[schemars(description = "The LSP method name, e.g. `textDocument/typeDefinition`, `textDocument/implementation`, `textDocument/codeAction`.")]
+    pub method: String,
+    #[schemars(description = "Raw LSP request params as a JSON object. Omit for requests that take no params. Positions are 0-based line:character.")]
+    pub params: Option<serde_json::Value>,
 }
 
 // ---------------- result helpers ----------------
