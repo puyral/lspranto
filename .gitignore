@@ -24,3 +24,11 @@ target
 # Added by cargo
 
 /target
+
+# nix
+result
+.direnv
+
+# macos
+**/.DS_Store
+**/._*
