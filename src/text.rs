@@ -7,7 +7,7 @@ use crate::lsp::conv;
 use itertools::Itertools;
 use lsp_types::{
     CompletionResponse, Diagnostic, DocumentSymbol, DocumentSymbolResponse, GotoDefinitionResponse,
-    Hover, HoverContents, Location, MarkupContent, SymbolInformation, Uri, WorkspaceEdit,
+    Hover, HoverContents, Location, MarkupContent, OneOf, SymbolInformation, Uri, WorkspaceEdit,
 };
 use serde_json::Value;
 
@@ -204,19 +204,6 @@ pub fn format_diagnostics(diags: &[Diagnostic]) -> String {
 
 // ---- rename ----
 
-pub fn format_prepare_rename(v: Option<Value>) -> String {
-    match v {
-        None => "Rename is not supported at this position.".to_string(),
-        Some(val) => {
-            if let Some(p) = val.get("placeholder").and_then(|v| v.as_str()) {
-                format!("Renamable here. Current placeholder: `{p}`")
-            } else {
-                "Renamable here.".to_string()
-            }
-        }
-    }
-}
-
 pub fn format_workspace_edit(edit: Option<WorkspaceEdit>) -> String {
     let edit = match edit {
         None => return "No edits produced.".to_string(),
@@ -239,7 +226,42 @@ pub fn format_workspace_edit(edit: Option<WorkspaceEdit>) -> String {
     if out.trim().is_empty()
         && let Some(dc) = &edit.document_changes
     {
-        out.push_str(&serde_json::to_string_pretty(dc).unwrap_or_default());
+        use lsp_types::{DocumentChangeOperation, DocumentChanges};
+        let render_edit = |out: &mut String, e: &OneOf<lsp_types::TextEdit, lsp_types::AnnotatedTextEdit>| {
+            let (range, new_text) = match e {
+                OneOf::Left(t) => (t.range, t.new_text.clone()),
+                OneOf::Right(a) => (a.text_edit.range, a.text_edit.new_text.clone()),
+            };
+            let s = range.start;
+            let en = range.end;
+            out.push_str(&format!(
+                "  {}:{}-{}:{} -> {:?}\n",
+                s.line, s.character, en.line, en.character, new_text
+            ));
+        };
+        match dc {
+            DocumentChanges::Edits(edits) => {
+                for te in edits {
+                    out.push_str(&format!("{}:\n", uri_to_path(&te.text_document.uri)));
+                    for e in &te.edits {
+                        render_edit(&mut out, e);
+                    }
+                }
+            }
+            DocumentChanges::Operations(ops) => {
+                for op in ops {
+                    match op {
+                        DocumentChangeOperation::Edit(te) => {
+                            out.push_str(&format!("{}:\n", uri_to_path(&te.text_document.uri)));
+                            for e in &te.edits {
+                                render_edit(&mut out, e);
+                            }
+                        }
+                        DocumentChangeOperation::Op(_) => out.push_str("- (file create/rename/delete operation)\n"),
+                    }
+                }
+            }
+        }
     }
     if out.trim().is_empty() {
         "No edits produced.".to_string()

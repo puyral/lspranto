@@ -222,29 +222,8 @@ impl LsprantoServer {
     }
 
     #[tool(
-        name = "lsp_prepare_rename",
-        description = "Check whether the symbol at a 0-based position can be renamed."
-    )]
-    async fn lsp_prepare_rename(
-        &self,
-        Parameters(p): Parameters<PositionParam>,
-    ) -> Result<CallToolResult, McpError> {
-        let (client, uri, pos) = match self.route(&p).await {
-            Ok(v) => v,
-            Err(e) => return Ok(err_text(e)),
-        };
-        if !client.supports_prepare_rename() {
-            return Ok(err_text("server does not support rename preparation"));
-        }
-        match client.prepare_rename(&uri, pos).await {
-            Ok(v) => Ok(ok_text(text::format_prepare_rename(v))),
-            Err(e) => Ok(err_text(format!("prepare rename failed: {e:#}"))),
-        }
-    }
-
-    #[tool(
         name = "lsp_rename_symbol",
-        description = "Compute the edits needed to rename the symbol at a 0-based position. Returns the proposed edits for review; it does NOT apply them."
+        description = "Check whether the symbol at a 0-based position can be renamed, and if so compute the edits needed to rename it. Returns the proposed edits for review; it does NOT apply them. Fails cleanly if the position is not renamable."
     )]
     async fn lsp_rename_symbol(
         &self,
@@ -300,7 +279,7 @@ impl ServerHandler for LsprantoServer {
             "LSP bridge. Activate a workspace with lsp_activate_workspace, then use \
              lsp_hover / lsp_goto_definition / lsp_find_references / lsp_completion / \
              lsp_diagnostics / lsp_document_symbols / lsp_workspace_symbols / \
-             lsp_prepare_rename / lsp_rename_symbol. All positions are 0-based line:character.",
+             lsp_rename_symbol. All positions are 0-based line:character.",
         )
     }
 }

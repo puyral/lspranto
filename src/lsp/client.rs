@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use lsp_types::{
     ClientCapabilities, CompletionParams, CompletionResponse, ConfigurationParams,
     DidOpenTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionResponse,
-    Hover, HoverParams, InitializeParams, InitializeResult, OneOf, Position,
+    Hover, HoverParams, InitializeParams, InitializeResult, Position,
     PublishDiagnosticsParams, ReferenceParams, RenameParams, ServerCapabilities, Uri,
     TextDocumentClientCapabilities, TextDocumentIdentifier, TextDocumentItem,
     TextDocumentPositionParams, WorkspaceClientCapabilities, WorkspaceEdit, WorkspaceFolder,
@@ -183,13 +183,6 @@ impl LspClient {
             .map(|c| c.rename_provider.is_some())
             .unwrap_or(true)
     }
-    pub fn supports_prepare_rename(&self) -> bool {
-        match self.inner.caps.get().and_then(|c| c.rename_provider.as_ref()) {
-            Some(OneOf::Left(true)) => true,
-            Some(OneOf::Right(opts)) => opts.prepare_provider.unwrap_or(false),
-            _ => false,
-        }
-    }
 
     // ---- typed LSP requests ----
 
@@ -257,11 +250,6 @@ impl LspClient {
             partial_result_params: Default::default(),
         };
         self.request_raw("workspace/symbol", serde_json::to_value(&params)?).await.map(Some)
-    }
-
-    /// `prepareRename` response shape varies; returned as raw JSON.
-    pub async fn prepare_rename(&self, uri: &Uri, pos: Position) -> Result<Option<Value>> {
-        self.request_raw("textDocument/prepareRename", pos_params(uri, pos)).await.map(Some)
     }
 
     pub async fn rename(&self, uri: &Uri, pos: Position, new_name: &str) -> Result<Option<WorkspaceEdit>> {
