@@ -1,5 +1,7 @@
 # lspranto
 
+**NB**: as all LLM-tools should be, this is nearly 100% vibe-coded.
+
 A config-driven [MCP](https://modelcontextprotocol.io/) server that bridges any
 stdio-based [LSP](https://microsoft.github.io/language-server-protocol/) language
 server to MCP clients. One process can serve many languages: files are routed to
