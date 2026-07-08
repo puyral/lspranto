@@ -1,0 +1,24 @@
+# Example user configuration. Use with `lspranto --config examples/user-config.toml`.
+#
+# This fully replaces the built-in registry (config/default.toml), so list every
+# language you want.
+
+[[servers]]
+language_id = "rust"
+command = "rust-analyzer"
+file_extensions = ["rs"]
+# Pass server-specific options:
+initialization_options = { checkOnSave = { command = "clippy" } }
+timeout_secs = 120
+
+[[servers]]
+language_id = "python"
+command = "basedpyright"
+args = ["--stdio"]
+file_extensions = ["py"]
+env = { VIRTUAL_ENV = "/home/me/proj/.venv" }
+
+[[servers]]
+language_id = "zig"
+command = "zls"
+file_extensions = ["zig"]

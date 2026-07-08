@@ -1,0 +1,57 @@
+# Built-in default language-server registry.
+#
+# Each entry describes how to launch one stdio-based LSP server and which file
+# extensions it claims.  Override or extend this with `lspranto --config <path>`
+# using the same `[[servers]]` schema.
+#
+# Fields:
+#   language_id           : LSP language identifier (e.g. "rust", "python")
+#   command               : executable to launch
+#   args                  : arguments passed to the executable (default [])
+#   env                   : extra environment variables (default {})
+#   file_extensions       : extensions (without the dot) routed to this server
+#   initialization_options: optional JSON sent as `initializationOptions`
+#   timeout_secs          : per-request timeout in seconds (default 60)
+
+[[servers]]
+language_id = "rust"
+command = "rust-analyzer"
+file_extensions = ["rs"]
+
+[[servers]]
+language_id = "go"
+command = "gopls"
+file_extensions = ["go"]
+
+[[servers]]
+language_id = "python"
+command = "pyright-langserver"
+args = ["--stdio"]
+file_extensions = ["py"]
+
+[[servers]]
+language_id = "typescript"
+command = "typescript-language-server"
+args = ["--stdio"]
+file_extensions = ["ts", "tsx", "js", "jsx", "mts", "cts"]
+
+[[servers]]
+language_id = "c"
+command = "clangd"
+file_extensions = ["c", "h", "cpp", "hpp", "cc", "hh", "cxx", "hxx"]
+
+[[servers]]
+language_id = "nix"
+command = "nil"
+file_extensions = ["nix"]
+
+[[servers]]
+language_id = "lua"
+command = "lua-language-server"
+file_extensions = ["lua"]
+
+[[servers]]
+language_id = "ruby"
+command = "solargraph"
+args = ["stdio"]
+file_extensions = ["rb"]

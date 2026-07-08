@@ -22,6 +22,7 @@
       ];
       perSystem = { self', ... }: {
         devShells.default = self'.devShells.rust;
+        packages.default = self'.packages.lspranto;
 
         treefmt.programs = {
           nixfmt.enable = true;
